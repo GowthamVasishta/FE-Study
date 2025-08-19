@@ -1,0 +1,88 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Aug 19 09:29:47 2025
+
+@author: gowth
+"""
+
+import pandas as pd
+import numpy as np
+from scipy.stats import ks_2samp, wasserstein_distance, chi2_contingency, zscore
+
+# Example DataFrames: old version df1 and new version df2
+# (In practice, df1 and df2 would be provided or loaded; here we assume they exist.)
+df1 = pd.DataFrame({
+    "Name": ["A", "B", "C", "D", "E"],
+    "Age": [25, 30, 22, 40, 35],
+    "Department": ["HR", "Finance", "IT", "Finance", "HR"],
+    "Salary": [50000, 60000, 55000, 65000, 58000]
+})
+
+df2 = pd.DataFrame({
+    "Name": ["A", "B", "C", "F", "E"],
+    "Age": [26, 30, 22, 29, 80],   # Age changed for A, outlier for E
+    "Department": ["HR", "Finance", "R&D", "Finance", "HR"],  # Dept drift
+    "Salary": [51000, 60000, 54000, 62000, 5800000000]
+})
+
+# 1. Align schema by intersecting columns
+common_cols = df1.columns.intersection(df2.columns)
+df1_common = df1[common_cols]
+df2_common = df2[common_cols]
+
+# 2. Identify added/removed rows (compare full rows as tuples)
+rows1 = {tuple(x) for x in df1_common.values.tolist()}
+rows2 = {tuple(x) for x in df2_common.values.tolist()}
+removed = rows1 - rows2
+added   = rows2 - rows1
+removed_df = pd.DataFrame(list(removed), columns=common_cols)
+added_df   = pd.DataFrame(list(added),   columns=common_cols)
+print("Rows REMOVED in new version:")
+print(removed_df)
+print("\nRows ADDED in new version:")
+print(added_df)
+
+# 3. Compute drift for numeric columns
+numeric_cols = df1_common.select_dtypes(include=[np.number]).columns
+drift_summary = []
+for col in numeric_cols:
+    x = df1_common[col].dropna()
+    y = df2_common[col].dropna()
+    # KS test (two-sample) with asymptotic p-value
+    ks_stat, ks_p = ks_2samp(x, y, method='asymp')
+    # Wasserstein (Earth Mover's) distance
+    w_dist = wasserstein_distance(x, y)
+    # Normalize to percentage of range
+    data_min = min(x.min(), y.min())
+    data_max = max(x.max(), y.max())
+    drift_pct = 100 * w_dist / (data_max - data_min) if data_max != data_min else 0
+    drift_summary.append((col, 'numeric', drift_pct, ks_p))
+
+# 4. Compute drift for categorical columns
+from scipy.stats import chi2_contingency
+categorical_cols = df1_common.select_dtypes(exclude=[np.number]).columns
+for col in categorical_cols:
+    freq1 = df1_common[col].value_counts()
+    freq2 = df2_common[col].value_counts()
+    cats = sorted(set(freq1.index).union(freq2.index))
+    # Build 2xN contingency table: rows=[old_freqs, new_freqs]
+    table = np.array([
+        [freq1.get(cat, 0) for cat in cats],
+        [freq2.get(cat, 0) for cat in cats]
+    ])
+    chi2, p, dof, ex = chi2_contingency(table)
+    drift_summary.append((col, 'categorical', np.nan, p))
+
+# Combine drift summary into a DataFrame
+drift_df = pd.DataFrame(drift_summary, columns=['column','dtype','drift_pct','p_value'])
+print("\nDrift summary (by column):")
+print(drift_df)
+
+# 5. Identify numeric outliers in new version (z-score > 3)
+df2_numeric = df2_common[numeric_cols]
+# Compute z-scores for each numeric column
+zs = np.abs(zscore(df2_numeric, nan_policy='omit'))
+outlier_mask = (zs > 1).any(axis=1)
+outliers_df = df2_common.loc[outlier_mask, numeric_cols]
+print("\nNumeric outliers in new version (z-score > 3), sample rows:")
+print(outliers_df.head())
