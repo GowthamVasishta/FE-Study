@@ -1,0 +1,55 @@
+import re
+import unicodedata
+from rapidfuzz import fuzz
+
+# Common stopwords / legal suffixes in issuer names
+STOPWORDS = {
+    "ab","plc","corp","inc","ltd","llc","holdings","holding",
+    "group","company","co","limited","corporation","sa","ag","nv","oy"
+}
+
+def normalize(text: str) -> str:
+    """Normalize issuer names: lowercase, remove accents, punctuation, and stopwords"""
+    if not text:
+        return ""
+    
+    # Lowercase + remove accents
+    text = text.lower().strip()
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("utf-8")
+    
+    # Remove punctuation & digits
+    text = re.sub(r"[^a-z\s]", " ", text)
+    
+    # Remove stopwords
+    tokens = [t for t in text.split() if t not in STOPWORDS]
+    
+    # Sort tokens to ignore order
+    return " ".join(sorted(tokens))
+
+def issuer_similarity(name1: str, name2: str) -> float:
+    """
+    Compute a similarity score between two issuer names using best practices:
+    - normalization (accents, punctuation, casing)
+    - stopword removal
+    - hybrid scoring (token_set_ratio + partial_ratio)
+    - overlap boosting if important tokens are shared
+    """
+    n1, n2 = normalize(name1), normalize(name2)
+    
+    if not n1 or not n2:
+        return 0.0
+    
+    # Base scores
+    tsr = fuzz.token_set_ratio(n1, n2)
+    pr  = fuzz.partial_ratio(n1, n2)
+    
+    # Hybrid weighted score
+    score = 0.7 * tsr + 0.3 * pr
+    
+    # Boost if there is strong token overlap
+    tokens1, tokens2 = set(n1.split()), set(n2.split())
+    overlap = tokens1 & tokens2
+    if overlap:
+        score += 5  # small boost for shared key tokens
+    
+    return min(score, 100.0)  # cap at 100
